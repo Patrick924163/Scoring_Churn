@@ -1,0 +1,1142 @@
+---
+title: "Scoring"
+output: html_document
+date: "2023-01-19"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r,echo=FALSE}
+library(BioStatR)
+library(DescTools)
+library(tidyverse)
+library(questionr)
+library(lubridate)
+library(class)
+library(UBL)
+library(scorecard)
+library(woeBinning)
+library(MASS, lib.loc = "/usr/lib/R/library")
+library(pROC)
+library(MLmetrics)
+library(nnet, lib.loc = "/usr/lib/R/library")
+library(randomForest)
+library(e1071, lib.loc = "/usr/lib/R/site-library")
+```
+
+
+
+```{r}
+## Chargement du fichier
+
+
+base_telecom_2022_03 <- read.table(file = "base_telecom_2021_12.txt" ,encoding = "UTF-8" ,sep = ";" ,header = TRUE ,stringsAsFactors = FALSE ,
+  na.strings = ""
+)
+
+head(base_telecom_2022_03)
+```
+
+
+
+```{r}
+## Chargement du fichier
+
+
+#base_telecom_2022_03 <- read.table(file = "base_telecom_2022_03.txt" ,encoding = "UTF-8" ,sep = ";" ,header = TRUE ,stringsAsFactors = FALSE ,
+#  na.strings = ""
+#)
+
+#head(base_telecom_2022_03)
+```
+
+
+
+
+
+
+```{r}
+base_telecom_2022_03$flag_resiliation = as.factor(base_telecom_2022_03$flag_resiliation)
+
+base_telecom_2022_03$flag_migration_baisse = as.factor(base_telecom_2022_03$flag_migration_baisse)
+
+base_telecom_2022_03$flag_migration_hausse = as.factor(base_telecom_2022_03$flag_migration_hausse)
+
+
+base_telecom_2022_03$date_fin_engagement = dmy(base_telecom_2022_03$date_fin_engagement)
+
+base_telecom_2022_03$date_naissance = dmy(base_telecom_2022_03$date_naissance)
+
+base_telecom_2022_03$date_dernier_reengagement = dmy(base_telecom_2022_03$date_dernier_reengagement)
+
+
+base_telecom_2022_03$date_activation = dmy(base_telecom_2022_03$date_activation)
+
+base_telecom_2022_03$flag_migration_baisse = as.factor(base_telecom_2022_03$flag_migration_baisse)
+
+```
+
+
+
+```{r}
+## Variable ayant les valeurs manquantes
+
+colonne = names(base_telecom_2022_03)
+
+val_manq = c()
+
+for (val in colonne ) {
+
+  if (sum(is.na(base_telecom_2022_03[,val]))>0) {
+    
+    val_manq = append(val_manq,paste0(val,", ") )
+    
+  }
+  
+}
+
+cat("les colonnes avec valeurs manquantes sont: ", val_manq, "\n")
+```
+
+
+```{r}
+## Calcul de nouveau indicateur
+
+base_telecom_2022_03$Age = round(as.numeric((dmy("31/12/2021")-base_telecom_2022_03$date_naissance)/365),2)
+
+base_telecom_2022_03$anciennete = round(as.numeric((dmy("31/12/2021")-base_telecom_2022_03$date_activation)/365),2)
+
+## temps restant en nombre de mois pour l'engagement, si négatif alors engagement expiré
+
+base_telecom_2022_03$reste_engagement = round(as.numeric((dmy("31/12/2021")-base_telecom_2022_03$date_fin_engagement)/30),2)
+
+base_telecom_2022_03$recence_reengagement = round(as.numeric((dmy("31/12/2021")-base_telecom_2022_03$date_dernier_reengagement)/30),2)
+
+#base_telecom_2022_03 = base_telecom_2022_03[,-c(2,9,24,22)]
+
+
+base_telecom_2022_03 = base_telecom_2022_03 %>% dplyr::select(-c("date_naissance","date_activation","date_fin_engagement","date_dernier_reengagement"))
+
+#base_telecom_2022_03 = base_telecom_2022_03[,-c("date_naissance","date_activation","date_fin_engagement","date_dernier_reengagement")]
+
+```
+
+
+
+```{r}
+## Suite crétion indicateur moyennes d'appel et sms les 06 ou 03 derniers mois
+
+base_telecom_2022_03$moy_appel_6 = round(apply(base_telecom_2022_03[,c("vol_appels_m6","vol_appels_m5","vol_appels_m4","vol_appels_m3","vol_appels_m2","vol_appels_m1")], 1, mean),2)
+
+base_telecom_2022_03$moy_appel_3 = round(apply(base_telecom_2022_03[,c("vol_appels_m3","vol_appels_m2","vol_appels_m1")], 1, mean),2)
+
+base_telecom_2022_03$moy_sms_6 = round(apply(base_telecom_2022_03[,c("nb_sms_m6","nb_sms_m5","nb_sms_m4","nb_sms_m3","nb_sms_m2","nb_sms_m1")], 1, mean),2)
+
+base_telecom_2022_03$moy_sms_3 = round(apply(base_telecom_2022_03[,c("nb_sms_m3","nb_sms_m2","nb_sms_m1")], 1, mean),2)
+
+## flag_depassement_offre
+
+base_telecom_2022_03[base_telecom_2022_03$duree_offre_init<base_telecom_2022_03$duree_offre, "flag_depasse_offre"] = 1
+
+base_telecom_2022_03[is.na(base_telecom_2022_03$flag_depasse_offre),"flag_depasse_offre"] = 0
+
+## suite création des KPIs
+
+base_telecom_2022_03$statut_impaye = ifelse(base_telecom_2022_03$situation_impayes=="Aucun impayé","tjr_a_jr","pas_tjr_jr")
+
+base_telecom_2022_03$statut_telephone = ifelse((base_telecom_2022_03$telephone_init=="Haut de gamme") & (base_telecom_2022_03$telephone=="Bas de gamme"),"mauvais",ifelse(((base_telecom_2022_03$telephone_init=="Haut de gamme") & (base_telecom_2022_03$telephone=="Milieu de gamme")) |((base_telecom_2022_03$telephone_init=="Milieu de gamme") & (base_telecom_2022_03$telephone=="Bas de gamme")) ,"moyen", 
+                                                                                                                                                                          ifelse((base_telecom_2022_03$telephone_init %in% c("Milieu de gamme","Bas de gamme")) & (base_telecom_2022_03$telephone %in% c("Haut de gamme","Milieu de gamme")),"bon","autre")))
+
+```
+
+
+
+
+```{r}
+
+base_telecom_2022_03$flag_migration = ifelse(base_telecom_2022_03$nb_migrations>0,1,0)
+
+base_telecom_2022_03[,c("flag_migration","flag_migration_hausse","flag_migration_baisse")] %>% group_by(`flag_migration_hausse`,`flag_migration_baisse`) %>% summarise(n_migration=sum(flag_migration),.groups='drop')
+```
+
+
+```{r}
+ggplot(base_telecom_2022_03) +
+  aes(x = recence_reengagement) +
+  geom_density(aes(fill = flag_resiliation), alpha = 0.7)
+```
+
+
+
+```{r}
+base_telecom_2022_03 = base_telecom_2022_03 %>% mutate(Age=replace_na(Age, median(Age, na.rm=TRUE)))
+
+base_telecom_2022_03 = base_telecom_2022_03 %>% mutate(nb_sms_m3=replace_na(nb_sms_m3, median(nb_sms_m3, na.rm=TRUE)))
+
+base_telecom_2022_03 = base_telecom_2022_03 %>% mutate(reste_engagement=replace_na(reste_engagement, median(reste_engagement, na.rm=TRUE)))  
+
+base_telecom_2022_03 = base_telecom_2022_03 %>% mutate(revenu_moyen_ville=replace_na(revenu_moyen_ville, median(revenu_moyen_ville, na.rm=TRUE)))
+
+base_telecom_2022_03 = base_telecom_2022_03 %>% mutate(moy_sms_6=replace_na(moy_sms_6, median(moy_sms_6, na.rm=TRUE)))
+
+base_telecom_2022_03 = base_telecom_2022_03 %>% mutate(moy_sms_3=replace_na(moy_sms_3, median(moy_sms_3, na.rm=TRUE)))
+
+base_telecom_2022_03$reengagements = ifelse(is.na(base_telecom_2022_03$recence_reengagement),"jamais_reengage",
+                                               ifelse(base_telecom_2022_03$recence_reengagement <= 6, "moins_6_mois",
+                                                      ifelse((base_telecom_2022_03$recence_reengagement>6) &    (base_telecom_2022_03$recence_reengagement<=12),"6_12_mois","plus_12_mois")))
+
+```
+
+
+
+
+```{r}
+base_telecom_2022_03 = base_telecom_2022_03 %>% dplyr::select(-c("sexe",  "taille_ville",  "type_ville",  "revenu_moyen_ville","recence_reengagement","code_postal",
+                                                          "enseigne","mode_paiement","id_client"))  #,"id_client"
+```
+
+
+```{r}
+
+#base_telecom_2022_03 = base_telecom_2022_03[,-c(2,4,9,5,6,7,41,8)]
+```
+
+
+
+
+```{r}
+var_type <- data.frame(type=sapply(base_telecom_2022_03, class))
+var_type$nom <- rownames(var_type)
+rownames(var_type) <- NULL
+var_type
+```
+
+
+```{r}
+varnum = var_type[var_type$type %in% c("numeric","integer"),]
+
+liste_var_num = varnum[,"nom"]
+
+liste_var_num
+```
+
+
+
+
+
+
+
+```{r}
+#base_tomek = TomekClassif(flag_resiliation~.,dat=base_telecom_2022_03,dist = "HEOM",rem = "maj")
+
+set.seed(1000)
+
+indice = sample(nrow(base_telecom_2022_03),nrow(base_telecom_2022_03)*0.8)
+
+base_train = base_telecom_2022_03[indice,]
+
+base_val = base_telecom_2022_03[-indice,]
+```
+
+
+```{r}
+
+#id_client = base_telecom_2022_03$id_client
+
+#base_train = base_telecom_2022_03[,-1]
+```
+
+
+
+
+```{r}
+## Base d"entrainement
+
+woe = woe.binning(base_train, "flag_resiliation", liste_var_num)
+woe.binning.table(woe)
+
+base_train = woe.binning.deploy(base_train, woe) %>% mutate_at(vars(ends_with(".binned")), fct_drop) %>% rename(duree_offre_init_woe = duree_offre_init.binned, duree_offre_woe = duree_offre.binned, nb_migrations_woe = nb_migrations.binned,nb_services_woe=nb_services.binned,
+flag_personnalisation_repondeur_woe=flag_personnalisation_repondeur.binned,flag_telechargement_sonnerie_woe=flag_telechargement_sonnerie.binned,
+nb_reengagements_woe=nb_reengagements.binned,vol_appels_m6_woe=vol_appels_m6.binned,vol_appels_m5_woe=vol_appels_m5.binned,vol_appels_m4_woe=vol_appels_m4.binned,vol_appels_m3_woe=vol_appels_m3.binned,vol_appels_m2_woe=vol_appels_m2.binned,vol_appels_m1_woe=vol_appels_m1.binned, flag_appels_vers_international_woe=flag_appels_vers_international.binned,flag_appels_depuis_international_woe=flag_appels_depuis_international.binned,
+flag_appels_numeros_speciaux_woe=flag_appels_numeros_speciaux.binned,nb_sms_m6_woe=nb_sms_m6.binned,nb_sms_m5_woe=nb_sms_m5.binned,nb_sms_m4_woe=nb_sms_m4.binned,nb_sms_m3_woe=nb_sms_m3.binned,nb_sms_m2_woe=nb_sms_m2.binned,nb_sms_m1_woe=nb_sms_m1.binned,Age_woe=Age.binned,anciennete_woe=anciennete.binned,reste_engagement_woe=reste_engagement.binned,moy_appel_6_woe=moy_appel_6.binned,moy_appel_3_woe=moy_appel_3.binned,moy_sms_6_woe=moy_sms_6.binned,moy_sms_3_woe=moy_sms_3.binned,flag_depasse_offre_woe=flag_depasse_offre.binned,flag_migration_woe=flag_migration.binned
+)
+
+
+```
+
+
+
+```{r}
+base_train = base_train %>% dplyr::select(-liste_var_num)
+```
+
+
+
+
+```{r}
+## Base de validation
+
+base_val = woe.binning.deploy(base_val, woe) %>% mutate_at(vars(ends_with(".binned")), fct_drop) %>% rename(duree_offre_init_woe = duree_offre_init.binned, duree_offre_woe = duree_offre.binned, nb_migrations_woe = nb_migrations.binned,nb_services_woe=nb_services.binned,
+flag_personnalisation_repondeur_woe=flag_personnalisation_repondeur.binned,flag_telechargement_sonnerie_woe=flag_telechargement_sonnerie.binned,
+nb_reengagements_woe=nb_reengagements.binned,vol_appels_m6_woe=vol_appels_m6.binned,vol_appels_m5_woe=vol_appels_m5.binned,vol_appels_m4_woe=vol_appels_m4.binned,vol_appels_m3_woe=vol_appels_m3.binned,vol_appels_m2_woe=vol_appels_m2.binned,vol_appels_m1_woe=vol_appels_m1.binned, flag_appels_vers_international_woe=flag_appels_vers_international.binned,flag_appels_depuis_international_woe=flag_appels_depuis_international.binned,
+flag_appels_numeros_speciaux_woe=flag_appels_numeros_speciaux.binned,nb_sms_m6_woe=nb_sms_m6.binned,nb_sms_m5_woe=nb_sms_m5.binned,nb_sms_m4_woe=nb_sms_m4.binned,nb_sms_m3_woe=nb_sms_m3.binned,nb_sms_m2_woe=nb_sms_m2.binned,nb_sms_m1_woe=nb_sms_m1.binned,Age_woe=Age.binned,anciennete_woe=anciennete.binned,reste_engagement_woe=reste_engagement.binned,moy_appel_6_woe=moy_appel_6.binned,moy_appel_3_woe=moy_appel_3.binned,moy_sms_6_woe=moy_sms_6.binned,moy_sms_3_woe=moy_sms_3.binned,flag_depasse_offre_woe=flag_depasse_offre.binned,flag_migration_woe=flag_migration.binned
+)
+```
+
+
+
+```{r}
+base_val = base_val %>% dplyr::select((-liste_var_num))
+```
+
+
+
+```{r}
+
+set.seed(1000)
+
+indice1 = sample(nrow(base_train),nrow(base_train)*0.8)
+
+base_train_final = base_train[indice1,]
+
+base_test = base_train[-indice1,]
+
+prop.table(table(base_train_final$flag_resiliation))
+
+prop.table(table(base_test$flag_resiliation))
+
+```
+
+
+```{r}
+
+#model = glm(flag_resiliation~.,family = binomial(link = "logit"), data = base_train_final) %>% stepAIC(direction = "both",  trace = FALSE)
+
+#summary(model)
+
+```
+
+
+
+
+
+```{r}
+base_train_final$pr <- predict(model, base_train_final, type=c("response"))
+
+base_test$pr <- predict(model, base_test, type=c("response"))
+
+base_val$pr <- predict(model, base_val, type=c("response"))
+
+roctrain_train = roc(base_train_final$flag_resiliation~base_train_final$pr)
+
+roctrain_test = roc(base_test$flag_resiliation~base_test$pr)
+
+roctrain_val = roc(base_val$flag_resiliation~base_val$pr)
+
+roctrain_train 
+
+roctrain_test
+
+roctrain_val 
+```
+
+
+
+```{r}
+y_pred=c()
+
+for (i in 1:length(base_val$pr)) {
+  if( base_val$pr[i] > 0.18) {
+    y_pred = append(y_pred,1)
+  }else{
+    y_pred = append(y_pred,0)
+  }
+}
+
+F1_Score(y_pred,base_val$flag_resiliation)
+
+```
+
+
+```{r}
+
+pred_test = prediction(y_pred,base_val$flag_resiliation)
+
+perf <- performance(pred_test, "tpr")
+
+perf@y.values[[1]][2]   ## taux de bien placés
+
+plot(performance(pred_test, "tpr", "fpr"))
+
+abline(0,1)
+```
+
+```{r}
+base_val$y_pred = y_pred
+
+dim(base_val[(base_val$flag_resiliation==1) &(base_val$y_pred==1),])[1]/dim(base_val[(base_val$flag_resiliation==1),])[1]
+```
+
+
+```{r}
+plot(roctrain_val)
+```
+
+
+
+
+```{r}
+y_pred_test=c()
+
+for (i in 1:length(base_test$pr)) {
+  if( base_test$pr[i] > 0.184) {
+    y_pred_test = append(y_pred_test,1)
+  }else{
+    y_pred_test = append(y_pred_test,0)
+  }
+}
+
+F1_Score(y_pred_test,base_test$flag_resiliation)
+
+base_test$y_pred = y_pred_test
+
+dim(base_test[(base_test$flag_resiliation==1) &(base_test$y_pred==1),])[1]/dim(base_test[(base_test$flag_resiliation==1),])[1]
+```
+
+
+################################# Random Forest ###################################################
+
+
+
+```{r}
+base_train_final = base_train_final %>% dplyr::select(-c(pr_rf,y_pred_rf))
+
+model1 = randomForest(flag_resiliation~., data = base_train_final) # ,ntree=200, mtry=10)
+
+summary(model1)
+```
+
+```{r}
+varImpPlot(model1)
+```
+
+
+
+```{r}
+base_train_final$pr_rf <- predict(model1, base_train_final, type=c("prob"))[,2]
+
+#F1_Score(base_train_final$pr_rf,base_train_final$flag_resiliation)
+
+y_pred_train=c()
+
+for (i in 1:length(base_train_final$pr_rf)) {
+  if( base_train_final$pr_rf[i] > 0.184) {
+    y_pred_train = append(y_pred_train,1)
+  }else{
+    y_pred_train = append(y_pred_train,0)
+  }
+}
+
+print(" Le F1 score ")
+
+F1_Score(y_pred_train,base_train_final$flag_resiliation)
+
+base_train_final$y_pred_rf = y_pred_train
+
+## Proportion de bien classé parmi les résiliés, ie flag_resiliation=1
+
+print(" proportion de bien classé ")
+
+dim(base_train_final[(base_train_final$flag_resiliation==1) &(base_train_final$y_pred_rf==1),])[1]/dim(base_train_final[(base_train_final$flag_resiliation==1),])[1]
+
+roc(base_train_final$flag_resiliation~base_train_final$pr_rf)
+```
+
+
+```{r}
+
+pred_test_rf = prediction(y_pred_train ,base_train_final$flag_resiliation)
+
+perf <- performance(pred_test_rf, "tpr")
+
+perf@y.values[[1]][2]   ## taux de bien placés
+
+```
+
+
+```{r}
+#base_test = base_test %>% dplyr::select(-c(y_pred,pr_rf))
+
+#base_val = base_val %>% dplyr::select(-c(y_pred,pr_rf))
+
+base_test$pr_rf <- predict(model1, base_test, type=c("prob"))[,2]
+
+base_val$pr_rf <- predict(model1, base_val, type=c("prob"))[,2]
+
+roc(base_test$flag_resiliation~base_test$pr_rf)
+
+roc(base_val$flag_resiliation~base_val$pr_rf)
+```
+
+
+```{r}
+
+y_pred_test=c()
+
+for (i in 1:length(base_test$pr_rf)) {
+  if( base_test$pr_rf[i] > 0.184) {
+    y_pred_test = append(y_pred_test,1)
+  }else{
+    y_pred_test = append(y_pred_test,0)
+  }
+}
+
+F1_Score(y_pred_test,base_test$flag_resiliation)
+
+base_test$y_pred = y_pred_test
+
+dim(base_test[(base_test$flag_resiliation==1) &(base_test$y_pred==1),])[1]/dim(base_test[(base_test$flag_resiliation==1),])[1]
+```
+
+
+```{r}
+
+y_pred=c()
+
+for (i in 1:length(base_val$pr_rf)) {
+  if( base_val$pr_rf[i] > 0.18) {
+    y_pred = append(y_pred,1)
+  }else{
+    y_pred = append(y_pred,0)
+  }
+}
+
+F1_Score(y_pred,base_val$flag_resiliation)
+
+base_val$y_pred = y_pred
+
+dim(base_val[(base_val$flag_resiliation==1) &(base_val$y_pred==1),])[1]/dim(base_val[(base_val$flag_resiliation==1),])[1]
+```
+
+
+
+```{r}
+
+################################################################### test du xgboost ####################################"
+
+base_boost = base_train_final %>% dplyr:: select(-c(flag_resiliation)) %>% data.matrix()
+
+label_boost = as.numeric(base_train_final$flag_resiliation)-1
+
+train_boost = xgb.DMatrix(data = base_boost, label = label_boost)
+
+base_val_boost = base_val %>% dplyr::select(-c(pr_rf,y_pred,flag_resiliation)) %>% data.matrix()
+
+val_label = as.numeric(base_val$flag_resiliation)-1
+
+val_boost = xgb.DMatrix(data = base_val_boost, label = val_label)
+
+wath_list = list(train=train_boost, val=val_boost)
+
+param = list(max_depth = 6, verbose=0, eta=0.5, nthread = 4, objective = "binary:logistic", eval_metric = "aucpr", lambda = 0.01)
+
+model_boost = xgb.train(params =param, data = train_boost, nrounds = 250, watchlist = wath_list)
+
+
+```
+
+
+
+```{r}
+###################################################### test avec le xgboost ############################################################################
+
+base_test_boost = base_test %>% dplyr::select(-c(pr_rf,y_pred,flag_resiliation,pr_boost,y_pred_boost)) %>% data.matrix()
+
+test_label = as.numeric(base_test$flag_resiliation)-1
+
+test_boost = xgb.DMatrix(data = base_test_boost,label = test_label)
+
+base_test$pr_boost = predict(model_boost,test_boost)
+
+y_pred_test=c()
+
+for (i in 1:length(base_test$pr_boost)) {
+  if( base_test$pr_boost[i] > 0.184) {
+    y_pred_test = append(y_pred_test,1)
+  }else{
+    y_pred_test = append(y_pred_test,0)
+  }
+}
+
+F1_Score(y_pred_test,base_test$flag_resiliation)
+
+base_test$y_pred_boost = y_pred_test
+
+dim(base_test[(base_test$flag_resiliation==1) &(base_test$y_pred_boost==1),])[1]/dim(base_test[(base_test$flag_resiliation==1),])[1]
+
+```
+
+
+
+
+
+
+########################################################################### Réseaux de Neuronne ##########################################
+
+```{r}
+
+#base_train_final_nn = base_train_final %>% dplyr::select(-c(flag_resiliation,pr_rf,y_pred_rf))
+
+#target = base_train_final$flag_resiliation
+
+model_nn = nnet(flag_resiliation~.,size=6,maxit=200,softmax=FALSE, data = base_train_final %>% dplyr::select(-c(pr_rf,y_pred_rf)))
+
+#summary(model_nn)
+```
+
+```{r}
+
+base_train_final$pr_nn <- predict(model_nn, base_train_final %>% dplyr::select(-c(pr_rf,y_pred_rf)))
+
+y_pred_train_nn=c()
+
+for (i in 1:length(base_train_final$pr_nn)) {
+  if( base_train_final$pr_nn[i] > 0.184) {
+    y_pred_train_nn = append(y_pred_train_nn,1)
+  }else{
+    y_pred_train_nn = append(y_pred_train_nn,0)
+  }
+}
+
+print(" Le F1 score ")
+
+F1_Score(y_pred_train_nn,base_train_final$flag_resiliation)
+
+base_train_final$y_pred_nn = y_pred_train_nn
+
+## Proportion de bien classé parmi les résiliés, ie flag_resiliation=1
+
+print(" proportion de bien classé ")
+
+dim(base_train_final[(base_train_final$flag_resiliation==1) &(base_train_final$y_pred_nn==1),])[1]/dim(base_train_final[(base_train_final$flag_resiliation==1),])[1]
+
+roc(base_train_final$flag_resiliation~base_train_final$pr_nn)
+```
+
+
+```{r}
+
+base_test$pr_nn <- predict(model_nn, base_test %>% dplyr::select(-c(pr_rf,y_pred)))
+
+base_val$pr_nn <- predict(model_nn, base_val%>% dplyr::select(-c(pr_rf,y_pred)))
+
+roc(base_test$flag_resiliation~base_test$pr_nn)
+
+roc(base_val$flag_resiliation~base_val$pr_nn)
+```
+
+
+```{r}
+
+y_pred_test=c()
+
+for (i in 1:length(base_test$pr_nn)) {
+  if( base_test$pr_nn[i] > 0.18) {
+    y_pred_test = append(y_pred_test,1)
+  }else{
+    y_pred_test = append(y_pred_test,0)
+  }
+}
+
+F1_Score(y_pred_test,base_test$flag_resiliation)
+
+base_test$y_pred_nn = y_pred_test
+
+dim(base_test[(base_test$flag_resiliation==1) &(base_test$y_pred_nn==1),])[1]/dim(base_test[(base_test$flag_resiliation==1),])[1]
+```
+
+
+```{r}
+
+tune.nnet(flag_resiliation~.,data=base_train_final %>% dplyr::select(-c(pr_rf,y_pred_rf,pr_nn,y_pred_nn)),size=c(2,3,4), decay=c(1,2,3),maxit=200,linout=TRUE)
+```
+
+
+
+####################################### Jeu de prédiction #########################
+
+
+```{r}
+base_telecom_2022_predict <- read.table(file = "base_telecom_2022_03.txt" ,encoding = "UTF-8" ,sep = ";" ,header = TRUE ,stringsAsFactors = FALSE ,
+  na.strings = ""
+)
+
+head(base_telecom_2022_predict)
+
+```
+
+
+
+
+```{r}
+
+base_telecom_2022_predict$flag_migration_baisse = as.factor(base_telecom_2022_predict$flag_migration_baisse)
+
+base_telecom_2022_predict$flag_migration_hausse = as.factor(base_telecom_2022_predict$flag_migration_hausse)
+
+
+base_telecom_2022_predict$date_fin_engagement = dmy(base_telecom_2022_predict$date_fin_engagement)
+
+base_telecom_2022_predict$date_naissance = dmy(base_telecom_2022_predict$date_naissance)
+
+base_telecom_2022_predict$date_dernier_reengagement = dmy(base_telecom_2022_predict$date_dernier_reengagement)
+
+
+base_telecom_2022_predict$date_activation = dmy(base_telecom_2022_predict$date_activation)
+
+base_telecom_2022_predict$flag_migration_baisse = as.factor(base_telecom_2022_predict$flag_migration_baisse)
+```
+
+
+
+
+
+
+```{r}
+colonne = names(base_telecom_2022_predict)
+
+val_manq = c()
+
+for (val in colonne ) {
+
+  if (sum(is.na(base_telecom_2022_predict[,val]))>0) {
+    
+    val_manq = append(val_manq,paste0(val,", ") )
+    
+  }
+  
+}
+
+cat("les colonnes avec valeurs manquantes sont: ", val_manq, "\n")
+```
+
+
+```{r}
+## Calcul de nouveau indicateur
+
+base_telecom_2022_predict$Age = round(as.numeric((dmy("31/12/2021")-base_telecom_2022_predict$date_naissance)/365),2)
+
+base_telecom_2022_predict$anciennete = round(as.numeric((dmy("31/12/2021")-base_telecom_2022_predict$date_activation)/365),2)
+
+## temps restant en nombre de mois pour l'engagement, si négatif alors engagement expiré
+
+base_telecom_2022_predict$reste_engagement = round(as.numeric((dmy("31/12/2021")-base_telecom_2022_predict$date_fin_engagement)/30),2)
+
+base_telecom_2022_predict$recence_reengagement = round(as.numeric((dmy("31/12/2021")-base_telecom_2022_predict$date_dernier_reengagement)/30),2)
+
+#base_telecom_2022_03 = base_telecom_2022_03[,-c(2,9,24,22)]
+
+
+base_telecom_2022_predict = base_telecom_2022_predict %>% dplyr::select(-c("date_naissance","date_activation","date_fin_engagement","date_dernier_reengagement"))
+```
+
+
+```{r}
+# Suite création indicateur moyennes d'appel et sms les 06 ou 03 derniers mois
+
+base_telecom_2022_predict$moy_appel_6 = round(apply(base_telecom_2022_predict[,c("vol_appels_m6","vol_appels_m5","vol_appels_m4","vol_appels_m3","vol_appels_m2","vol_appels_m1")], 1, mean),2)
+
+base_telecom_2022_predict$moy_appel_3 = round(apply(base_telecom_2022_predict[,c("vol_appels_m3","vol_appels_m2","vol_appels_m1")], 1, mean),2)
+
+base_telecom_2022_predict$moy_sms_6 = round(apply(base_telecom_2022_predict[,c("nb_sms_m6","nb_sms_m5","nb_sms_m4","nb_sms_m3","nb_sms_m2","nb_sms_m1")], 1, mean),2)
+
+base_telecom_2022_predict$moy_sms_3 = round(apply(base_telecom_2022_predict[,c("nb_sms_m3","nb_sms_m2","nb_sms_m1")], 1, mean),2)
+
+## flag_depassement_offre
+
+base_telecom_2022_predict[base_telecom_2022_predict$duree_offre_init<base_telecom_2022_predict$duree_offre, "flag_depasse_offre"] = 1
+
+base_telecom_2022_predict[is.na(base_telecom_2022_predict$flag_depasse_offre),"flag_depasse_offre"] = 0
+
+## suite création des KPIs
+
+base_telecom_2022_predict$statut_impaye = ifelse(base_telecom_2022_predict$situation_impayes=="Aucun impayé","tjr_a_jr","pas_tjr_jr")
+
+base_telecom_2022_predict$statut_telephone = ifelse((base_telecom_2022_predict$telephone_init=="Haut de gamme") & (base_telecom_2022_predict$telephone=="Bas de gamme"),"mauvais",ifelse(((base_telecom_2022_predict$telephone_init=="Haut de gamme") & (base_telecom_2022_predict$telephone=="Milieu de gamme")) |((base_telecom_2022_predict$telephone_init=="Milieu de gamme") & (base_telecom_2022_predict$telephone=="Bas de gamme")) ,"moyen",                                       ifelse((base_telecom_2022_predict$telephone_init %in% c("Milieu de gamme","Bas de gamme")) & (base_telecom_2022_predict$telephone %in% c("Haut de gamme","Milieu de gamme")),"bon","autre")))
+
+```
+
+
+
+
+```{r}
+
+base_telecom_2022_predict$flag_migration = ifelse(base_telecom_2022_predict$nb_migrations>0,1,0)
+
+base_telecom_2022_predict[,c("flag_migration","flag_migration_hausse","flag_migration_baisse")] %>% group_by(`flag_migration_hausse`,`flag_migration_baisse`) %>% summarise(n_migration=sum(flag_migration),.groups='drop')
+```
+
+```{r}
+
+## Remplacement des valeurs manquantes
+
+base_telecom_2022_predict = base_telecom_2022_predict %>% mutate(Age=replace_na(Age, median(Age, na.rm=TRUE)))
+
+base_telecom_2022_predict = base_telecom_2022_predict %>% mutate(nb_sms_m3=replace_na(nb_sms_m3, median(nb_sms_m3, na.rm=TRUE)))
+
+base_telecom_2022_predict = base_telecom_2022_predict %>% mutate(reste_engagement=replace_na(reste_engagement, median(reste_engagement, na.rm=TRUE)))
+
+base_telecom_2022_predict = base_telecom_2022_predict %>% mutate(revenu_moyen_ville=replace_na(revenu_moyen_ville, mean(revenu_moyen_ville, na.rm=TRUE)))
+
+base_telecom_2022_predict = base_telecom_2022_predict %>% mutate(moy_sms_6=replace_na(moy_sms_6, median(moy_sms_6, na.rm=TRUE)))
+
+base_telecom_2022_predict = base_telecom_2022_predict %>% mutate(moy_sms_3=replace_na(moy_sms_3, median(moy_sms_3, na.rm=TRUE)))
+
+base_telecom_2022_predict$reengagements = ifelse(is.na(base_telecom_2022_predict$recence_reengagement),"jamais_reengage",
+                                               ifelse(base_telecom_2022_predict$recence_reengagement <= 6, "moins_6_mois",
+                                                      ifelse((base_telecom_2022_predict$recence_reengagement>6) &    (base_telecom_2022_predict$recence_reengagement<=12),"6_12_mois","plus_12_mois")))
+
+```
+
+
+
+
+```{r}
+base_telecom_2022_predict = base_telecom_2022_predict %>% dplyr::select(-c("sexe",  "taille_ville",  "type_ville",  "revenu_moyen_ville","recence_reengagement","code_postal",
+                                                          "enseigne","mode_paiement"))  #,"id_client"
+```
+
+
+```{r}
+
+#base_telecom_2022_03 = base_telecom_2022_03[,-c(2,4,9,5,6,7,41,8)]
+```
+
+
+
+
+```{r}
+var_type <- data.frame(type=sapply(base_telecom_2022_predict, class))
+var_type$nom <- rownames(var_type)
+rownames(var_type) <- NULL
+var_type
+
+```
+
+```{r}
+## récupération des variables quantitatives pour discrétiser
+
+varnum = var_type[var_type$type %in% c("numeric","integer"),]
+
+liste_var_num = varnum[,"nom"]
+
+liste_var_num
+```
+
+
+
+```{r}
+
+id_client = base_telecom_2022_predict$id_client
+
+base_train_predict = base_telecom_2022_predict[,-1]
+```
+
+
+
+
+```{r}
+## Base d"entrainement
+
+base_train_predict = woe.binning.deploy(base_train_predict, woe) %>% mutate_at(vars(ends_with(".binned")), fct_drop) %>% rename(duree_offre_init_woe = duree_offre_init.binned, duree_offre_woe = duree_offre.binned, nb_migrations_woe = nb_migrations.binned,nb_services_woe=nb_services.binned,
+flag_personnalisation_repondeur_woe=flag_personnalisation_repondeur.binned,flag_telechargement_sonnerie_woe=flag_telechargement_sonnerie.binned,
+nb_reengagements_woe=nb_reengagements.binned,vol_appels_m6_woe=vol_appels_m6.binned,vol_appels_m5_woe=vol_appels_m5.binned,vol_appels_m4_woe=vol_appels_m4.binned,vol_appels_m3_woe=vol_appels_m3.binned,vol_appels_m2_woe=vol_appels_m2.binned,vol_appels_m1_woe=vol_appels_m1.binned, flag_appels_vers_international_woe=flag_appels_vers_international.binned,flag_appels_depuis_international_woe=flag_appels_depuis_international.binned,
+flag_appels_numeros_speciaux_woe=flag_appels_numeros_speciaux.binned,nb_sms_m6_woe=nb_sms_m6.binned,nb_sms_m5_woe=nb_sms_m5.binned,nb_sms_m4_woe=nb_sms_m4.binned,nb_sms_m3_woe=nb_sms_m3.binned,nb_sms_m2_woe=nb_sms_m2.binned,nb_sms_m1_woe=nb_sms_m1.binned,Age_woe=Age.binned,anciennete_woe=anciennete.binned,reste_engagement_woe=reste_engagement.binned,moy_appel_6_woe=moy_appel_6.binned,moy_appel_3_woe=moy_appel_3.binned,moy_sms_6_woe=moy_sms_6.binned,moy_sms_3_woe=moy_sms_3.binned,flag_depasse_offre_woe=flag_depasse_offre.binned,flag_migration_woe=flag_migration.binned
+)
+```
+
+
+```{r}
+base_train_predict = base_train_predict %>% dplyr::select((-liste_var_num))
+```
+
+
+```{r}
+## Prédition avec le model de regression logistique
+
+base_train_predict$pr <- predict(model, base_train_predict, type=c("response"))
+```
+
+
+
+```{r}
+#base_train_predict$id_client =  id_client
+
+base_train_predict = base_train_predict %>% arrange(desc(pr))
+
+client_risk_predict_reg = base_train_predict[1:2000,43]
+```
+
+
+
+```{r}
+## Prédition avec le model de random forest
+
+base_train_predict$pr_rf <- predict(model1, base_train_predict, type=c("prob"))[,2]
+
+base_train_predict$id_client =  id_client
+
+base_train_predict = base_train_predict %>% arrange(desc(pr_rf))
+
+client_risk_predict = base_train_predict[1:2000,43]
+```
+
+
+
+
+
+################################################################## ICI RNN #######################################################################
+
+
+
+
+
+```{r}
+####################### Modèle reseau de neuronne ###############################"""" 
+
+base_train_predict$pr_rf <- predict(model_nn, base_train_predict)
+
+base_train_predict$id_client =  id_client
+
+base_train_predict = base_train_predict %>% arrange(desc(pr_rf))
+
+client_risk_predict = base_train_predict[1:2000,43]
+
+```
+
+
+
+
+```{r}
+write.csv(client_risk_predict, "C5_Patrick_25032023.txt")
+
+write.table(
+  x = client_risk_predict ,
+  file = "/home/ensai/Documents/Scoring/C5_Patrick_25032023.txt" ,
+  row.names = FALSE ,
+  col.names = FALSE ,
+  quote = FALSE
+)
+```
+
+
+
+################################### Fin ######################################
+
+
+```{r}
+C4 <- read.table(file = "test_Rozenn.txt" ,encoding = "UTF-8" ,sep = ";" ,header = FALSE ,stringsAsFactors = FALSE ,
+  na.strings = ""
+)
+
+#C5 <- read.table(file = "C5_Yatte.txt" ,encoding = "UTF-8" ,sep = ";" ,header = FALSE ,stringsAsFactors = FALSE ,
+ # na.strings = ""
+#)
+
+C5 =as.data.frame(client_risk_predict,colnames="V1") 
+```
+
+
+
+```{r}
+
+nb_egal = 0
+
+for (id in C4$V1) {
+  
+  if (id %in% C5$client_risk_predict){
+    nb_egal = nb_egal+1
+  }
+  
+}
+nb_egal
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+```{r}
+
+base_train$id_client =  id_client
+
+base_train = base_train %>% arrange(desc(pr))
+
+client_risk = base_train[1:2000,43]
+
+```
+
+
+
+
+
+```{r}
+roctrain = roc(base_train_final$flag_resiliation~base_train_final$pr)
+```
+
+
+
+
+
+```{r}
+base_test$pr <- predict(model, base_test, type=c("response"))
+
+roctrain_test = roc(base_test$flag_resiliation~base_test$pr)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+```{r}
+
+base_test = base_test %>% arrange(Desc(pr))
+
+client_risk = base_test[1:2000]
+```
+
+
+
+
+
+
+
+
+
+
+```{r}
+F1_Score(y_pred,base_val$flag_resiliation)
+```
+
+
+```{r}
+base_val$y_pred = y_pred
+
+dim(base_val[(base_val$flag_resiliation==1) &(base_val$y_pred==1),])[1]/dim(base_val[(base_val$flag_resiliation==1),])[1]
+```
+
+
+
+```{r}
+y_pred_test=c()
+
+for (i in 1:length(base_test$pr)) {
+  if( base_test$pr[i] > 0.18) {
+    y_pred_test = append(y_pred_test,1)
+  }else{
+    y_pred_test = append(y_pred_test,0)
+  }
+}
+
+base_test$y_pred = y_pred_test
+
+dim(base_test[(base_test$flag_resiliation==1) &(base_test$y_pred==1),])[1]/dim(base_test[(base_test$flag_resiliation==1),])[1]
+
+```
+
+
+
+
+```{r}
+#set.seed (18111977)
+#fichier <- sample(x =client_risk , size = 2000)
+write.csv(client_risk, "C4_Patrick.txt")
+
+write.table(
+  x = client_risk ,
+  file = "/home/ensai/Documents/Scoring/C4_Patrick.txt" ,
+  row.names = FALSE ,
+  col.names = FALSE ,
+  quote = FALSE
+)
+
+```
+
+
+
+
+
+
+```{r}
+
+predict(model,base_test,type=c("response"))
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
